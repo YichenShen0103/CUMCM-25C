@@ -1,0 +1,8 @@
+matplotlib
+numpy
+pandas
+datetime
+seaborn
+statsmodels
+scipy
+lifelines
