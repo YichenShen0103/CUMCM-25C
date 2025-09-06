@@ -1,8 +1,9 @@
 matplotlib
 numpy
 pandas
-datetime
 seaborn
 statsmodels
 scipy
 lifelines
+torch
+scikit-learn
