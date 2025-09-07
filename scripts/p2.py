@@ -125,8 +125,7 @@ def fmt_list(lst, digits=1):
     return [round(float(x), digits) for x in lst]
 def fmt_dict(dct, digits=1):
     return {k: round(float(v), digits) for k, v in dct.items()}
-url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
-raw_df = load_and_clean_data(url)
+raw_df = load_and_clean_data("data/data.xlsx")
 raw_df = convert_weeks(raw_df)
 df = rename_columns(raw_df)
 print("Data shape:", df.shape)

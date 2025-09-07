@@ -16,8 +16,7 @@ import warnings
 warnings.filterwarnings("ignore")
 np.random.seed(42)
 torch.manual_seed(42)
-url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
-data = pd.read_excel(url, sheet_name=1)
+data = pd.read_excel("data/data.xlsx", sheet_name=1)
 data["class"] = data["染色体的非整倍体"].notna().astype(int)
 weeks_days = data["检测孕周"].str.split(r"[wW]", expand=True)
 data["孕天"] = weeks_days[0].astype(int) * 7 + weeks_days[1].fillna("0").replace(
@@ -123,9 +122,7 @@ class SuperAdvancedClassifier(nn.Module):
         attended = combined * attention_weights
         output = self.classifier(attended)
         return output
-image_url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/assets/model_pipeline.png"
-response = requests.get(image_url)
-img = Image.open(BytesIO(response.content))
+img = Image.open("assets/model_pipeline.png")
 display(img)
 def augment_minority_class(X, y, augment_factor=3):
     """通过添加噪声来增强少数类样本"""

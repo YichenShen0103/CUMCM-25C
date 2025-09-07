@@ -18,8 +18,7 @@ from sksurv.metrics import concordance_index_censored
 from lifelines.statistics import multivariate_logrank_test
 from sksurv.util import Surv
 warnings.filterwarnings("ignore")
-url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
-data = pd.read_excel(url, sheet_name=0)
+data = pd.read_excel("data/data.xlsx", sheet_name=0)
 features = ["年龄", "体重", "IVF妊娠", "孕妇BMI", "怀孕次数", "生产次数"]
 feature_names_english = [
     "Age",
@@ -104,7 +103,7 @@ def week_to_numeric(week_str):
     except:
         return np.nan
 try:
-    data = pd.read_excel(url, sheet_name=0)
+    data = pd.read_excel("data/data.xlsx", sheet_name=0)
 except FileNotFoundError:
     print("Error: 'data/data.xlsx' file not found.")
     exit()

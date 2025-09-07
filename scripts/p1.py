@@ -11,8 +11,7 @@ from pygam import LinearGAM, s
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split, cross_val_score
 warnings.filterwarnings("ignore")
-url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
-data = pd.read_excel(url, sheet_name=0)
+data = pd.read_excel("data/data.xlsx", sheet_name=0)
 data.dropna(subset=["检测孕周", "GC含量", "孕妇BMI", "Y染色体浓度"], inplace=True)
 weeks_days = data["检测孕周"].str.split(r"[wW]", expand=True)
 data["孕天"] = weeks_days[0].astype(int) * 7 + weeks_days[1].fillna("0").replace(
