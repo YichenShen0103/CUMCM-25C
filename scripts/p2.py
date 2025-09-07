@@ -12,49 +12,67 @@ from contextlib import contextmanager
 
 warnings.filterwarnings("ignore")
 
-# read in data
-url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
-data = pd.read_excel(url, sheet_name=0)
-data.dropna(subset=["检测孕周", "GC含量", "孕妇BMI", "Y染色体浓度"], inplace=True)
 
-data0 = data.groupby("孕妇代码", as_index=False)["Y染色体浓度"].agg(
-    list_values=list, min_value="min", max_value="max"
-)
-data0 = data0[(data0["min_value"] < 0.04) & (data0["max_value"] > 0.04)]
-print(data0.shape)
-
-
-def is_non_decreasing(lst):
-    return all(x <= y for x, y in zip(lst, lst[1:]))
+# =========================
+# 数据预处理相关
+# =========================
+def load_and_clean_data(url: str) -> pd.DataFrame:
+    """加载 Excel 数据并清理空值"""
+    df = pd.read_excel(url, sheet_name=0)
+    df.dropna(subset=["检测孕周", "GC含量", "孕妇BMI", "Y染色体浓度"], inplace=True)
+    return df
 
 
-count = 0
-for i in data0.index:
-    if is_non_decreasing(data0.loc[i, "list_values"]) == False:
-        plt.plot(data0.loc[i, "list_values"], marker="o")
-        count += 1
+def convert_weeks(df: pd.DataFrame) -> pd.DataFrame:
+    """把检测孕周统一转换为周数 (浮点数)"""
+    weeks_days = df["检测孕周"].str.split(r"[wW]", expand=True)
+    df["孕天"] = weeks_days[0].astype(int) * 7 + weeks_days[1].fillna("0").replace(
+        "", "0"
+    ).astype(int)
+    df["孕天"] = df["孕天"].astype(np.float64) / 7.0
+    return df
 
-print(count)
-plt.show()
+
+def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """中英文列名映射"""
+    col_map_cn = {
+        "孕妇代码": "mother_id",
+        "检测孕周": "gestational_age",
+        "孕妇BMI": "bmi",
+        "年龄": "age",
+        "Y染色体浓度": "y_concentration",
+        "检测日期": "test_date",
+        "末次月经": "last_menstrual_period",
+        "身高": "height",
+        "体重": "weight",
+        "在参考基因组上比对的比例": "mapping_ratio",
+        "GC含量": "GC",
+        "孕天": "gestational_weeks",
+    }
+    return df.rename(columns=col_map_cn)
 
 
-def compute_event_time(df, threshold=0.04):
+# =========================
+# 事件时间计算
+# =========================
+def compute_event_time(df: pd.DataFrame, threshold: float = 0.04) -> pd.DataFrame:
+    """计算 crossing time (首次超过阈值的孕周)"""
     results = []
     for mid, sub in df.groupby("mother_id"):
         sub = sub.sort_values("gestational_weeks")
-        bmis = sub["bmi"].values
-        times = sub["gestational_weeks"].values
-        y_concs = sub["y_concentration"].values
-        event_time = None
-        event_occurred = 0
+        times, y_concs = sub["gestational_weeks"].values, sub["y_concentration"].values
+        event_time, event_occurred = None, 0
+
+        # 查找 crossing point
         for i in range(1, len(y_concs)):
-            if y_concs[i - 1] < threshold and y_concs[i] >= threshold:
-                # 线性插值计算事件时间
+            if y_concs[i - 1] < threshold <= y_concs[i]:
                 t1, t2 = times[i - 1], times[i]
                 y1, y2 = y_concs[i - 1], y_concs[i]
                 event_time = t1 + (threshold - y1) * (t2 - t1) / (y2 - y1)
                 event_occurred = 1
                 break
+
+        # 若未找到 crossing
         if event_time is None:
             if np.any(y_concs >= threshold):
                 event_time = times[np.argmax(y_concs >= threshold)]
@@ -62,24 +80,26 @@ def compute_event_time(df, threshold=0.04):
             else:
                 event_time = times[-1]
                 event_occurred = 0
-        # results.append((mid, event_time, event_occurred, bmis))
+
+        # 获取 BMI
         event_bmi = sub["bmi"].values[
             np.searchsorted(times, event_time, side="right") - 1
         ]
         results.append((mid, event_time, event_occurred, event_bmi))
+
     return pd.DataFrame(results, columns=["mother_id", "time", "event", "bmi"])
 
 
+# =========================
+# 分组与切割
+# =========================
 def find_best_cut(data, min_size=20, alpha=0.05):
+    """寻找最优 BMI 切割点"""
     sorted_bmi = np.sort(data["bmi"].unique())
-    best_cut = None
-    best_p = 1.0
-    best_stat = -np.inf
+    best_cut, best_stat, best_p = None, -np.inf, 1.0
 
     for cut in sorted_bmi[1:-1]:
-        group1 = data[data["bmi"] <= cut]
-        group2 = data[data["bmi"] > cut]
-
+        group1, group2 = data[data["bmi"] <= cut], data[data["bmi"] > cut]
         if len(group1) < min_size or len(group2) < min_size:
             continue
 
@@ -90,19 +110,14 @@ def find_best_cut(data, min_size=20, alpha=0.05):
             event_observed_B=group2["event"],
         )
         if result.test_statistic > best_stat:
-            best_stat = result.test_statistic
-            best_cut = cut
-            best_p = result.p_value
+            best_cut, best_stat, best_p = cut, result.test_statistic, result.p_value
 
-    if best_p < alpha:
-        return best_cut, best_stat, best_p
-    else:
-        return None, None, None
+    return (best_cut, best_stat, best_p) if best_p < alpha else (None, None, None)
 
 
 def recursive_partition_with_p(df, max_groups=5, min_size=20, alpha=0.05):
-    cuts = []
-    cut_pvalues = []
+    """递归分组并保存切割点与 p 值"""
+    cuts, cut_pvalues = [], []
 
     def split(data):
         if len(cuts) >= max_groups - 1:
@@ -110,7 +125,7 @@ def recursive_partition_with_p(df, max_groups=5, min_size=20, alpha=0.05):
         cut, stat, p = find_best_cut(data, min_size, alpha)
         if cut is not None:
             cuts.append(cut)
-            cut_pvalues.append(p)  # 保存对应 p 值
+            cut_pvalues.append(p)
             split(data[data["bmi"] <= cut])
             split(data[data["bmi"] > cut])
 
@@ -124,8 +139,8 @@ def recursive_partition_with_p(df, max_groups=5, min_size=20, alpha=0.05):
 
 
 def best_nipt_times(data):
-    kmf = KaplanMeierFitter()
-    best_times = {}
+    """根据 KM 曲线计算最佳检测孕周 (生存率 ≤ 0.1)"""
+    kmf, best_times = KaplanMeierFitter(), {}
     for group, sub in data.groupby("bmi_group"):
         sub = sub.dropna()
         if len(sub) < 10:
@@ -133,14 +148,15 @@ def best_nipt_times(data):
         kmf.fit(sub["time"], event_observed=sub["event"])
         surv = kmf.survival_function_
         crossing = surv[surv["KM_estimate"] <= 0.1]
-        if not crossing.empty:
-            best_times[group] = crossing.index[0]
-        else:
-            best_times[group] = np.nan
+        best_times[group] = crossing.index[0] if not crossing.empty else np.nan
     return best_times
 
 
+# =========================
+# 噪声模拟
+# =========================
 def add_measurement_error(df, error_std=0.005):
+    """在 Y 浓度中加入高斯噪声"""
     np.random.seed(42)
     df_err = df.copy()
     df_err["y_concentration"] += np.random.normal(0, error_std, size=len(df_err))
@@ -148,34 +164,25 @@ def add_measurement_error(df, error_std=0.005):
     return df_err
 
 
-df = pd.read_excel(url, sheet_name=0)
-weeks_days = df["检测孕周"].str.split(r"[wW]", expand=True)
-df["孕天"] = weeks_days[0].astype(int) * 7 + weeks_days[1].fillna("0").replace(
-    "", "0"
-).astype(int)
-# df["检测日期"] = pd.to_datetime(df["检测日期"], format="%Y%m%d")
-# df["末次月经"] = pd.to_datetime(df["末次月经"], format="%Y-%m-%d")
-# df["delta_days"] = (df["检测日期"] - df["末次月经"]).dt.days - df["孕天"]
-# df = df[abs(df["delta_days"]) <= 3]
-# df.drop(columns=["delta_days", "生产次数"], inplace=True)
-df["孕天"] = df["孕天"].astype(np.float64) / 7.0  # convert to weeks
+# =========================
+# 输出格式化
+# =========================
+def fmt_list(lst, digits=1):
+    return [round(float(x), digits) for x in lst]
 
-col_map_cn = {
-    "孕妇代码": "mother_id",
-    "检测孕周": "gestational_age",
-    "孕妇BMI": "bmi",
-    "年龄": "age",
-    "Y染色体浓度": "y_concentration",
-    "检测日期": "test_date",
-    "末次月经": "last_menstrual_period",
-    "身高": "height",
-    "体重": "weight",
-    "在参考基因组上比对的比例": "mapping_ratio",
-    "GC含量": "GC",
-    "孕天": "gestational_weeks",
-}
-df = df.rename(columns=col_map_cn)
-print(df.shape)
+
+def fmt_dict(dct, digits=1):
+    return {k: round(float(v), digits) for k, v in dct.items()}
+
+
+url = "https://raw.githubusercontent.com/YichenShen0103/CUMCM-25C/main/data/data.xlsx"
+
+raw_df = load_and_clean_data(url)
+raw_df = convert_weeks(raw_df)
+df = rename_columns(raw_df)
+
+print("Data shape:", df.shape)
+
 df_event = compute_event_time(
     df[["mother_id", "gestational_weeks", "bmi", "y_concentration"]]
 )
@@ -183,6 +190,7 @@ df_grouped, cuts, cut_pvalues = recursive_partition_with_p(
     df_event, max_groups=3, min_size=5, alpha=0.1
 )
 
+# KM 曲线绘制
 kmf = KaplanMeierFitter()
 plt.figure(figsize=(10, 6))
 for group, sub in df_grouped.groupby("bmi_group"):
@@ -195,7 +203,10 @@ plt.title("KM Curves by BMI Groups")
 plt.legend(title="BMI Groups")
 plt.show()
 
+# 最佳时间
 best_times = best_nipt_times(df_grouped)
+
+# 加入噪声
 df_err = add_measurement_error(df)
 df_event_err = compute_event_time(
     df_err[["mother_id", "gestational_weeks", "bmi", "y_concentration"]]
@@ -203,21 +214,16 @@ df_event_err = compute_event_time(
 df_grouped_err, cuts_err, cut_pvalues_err = recursive_partition_with_p(df_event_err)
 best_times_err = best_nipt_times(df_grouped_err)
 
-
-def fmt_list(lst, digits=1):
-    return [round(float(x), digits) for x in lst]
-
-
-def fmt_dict(dct, digits=1):
-    return {k: round(float(v), digits) for k, v in dct.items()}
-
-
+# 打印结果
 print("Optimal BMI Cut Points:", fmt_list(cuts))
 print("Cutpoints p-values:", fmt_list(cut_pvalues, digits=3))
 print("Cutpoints with Measurement Error:", fmt_list(cuts_err))
-print("Cutpoints p-values with Measurement Error:", fmt_list(cut_pvalues_err, digits=3))
+print(
+    "Cutpoints p-values with Measurement Error:",
+    fmt_list(cut_pvalues_err, digits=3),
+)
 
-print("Optimal NIPT Times (weeks):")
+print("\nOptimal NIPT Times (weeks):")
 for k, v in fmt_dict(best_times).items():
     print(f"  {k:10s} -> {v}")
 print("NIPT Times with Measurement Error (weeks):")

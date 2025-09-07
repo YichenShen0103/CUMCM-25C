@@ -391,78 +391,107 @@ plt.ylabel("Y chromosome concentration")
 plt.title("log(Pregnancy days) vs Y chromosome concentration (predicted and actual)")
 plt.show()
 
-col_map_cn = {
-    "孕妇代码": "mother_id",
-    "检测孕周": "gestational_age",
-    "孕妇BMI": "bmi",
-    "年龄": "age",
-    "Y染色体浓度": "y_concentration",
-    "检测日期": "test_date",
-    "末次月经": "last_menstrual_period",
-    "身高": "height",
-    "体重": "weight",
-    "在参考基因组上比对的比例": "mapping_ratio",
-    "GC含量": "GC",
-    "孕天": "gestational_weeks",
-}
-mod_df.rename(columns=col_map_cn, inplace=True)
-mod_df["y_clip"] = mod_df["y_concentration"].clip(lower=1e-6, upper=1 - 1e-6)
-mod_df["y_logit"] = np.log(mod_df["y_clip"] / (1 - mod_df["y_clip"]))
-mod_df["bmi"] = (mod_df["bmi"] - mod_df["bmi"].mean()) / mod_df["bmi"].std()
-mod_df["gestational_weeks"] = (
-    mod_df["gestational_weeks"] - mod_df["gestational_weeks"].mean()
-) / mod_df["gestational_weeks"].std()
-formula = "y_logit ~ bmi + gestational_weeks"
-md = smf.mixedlm(
-    formula, mod_df, groups=mod_df["mother_id"], re_formula="~gestational_weeks"
-)
-mdf = md.fit(reml=False, method="lbfgs", maxiter=2000)
-print(mdf.summary())
 
-y_true = mod_df["y_logit"].values
-y_pred = mdf.fittedvalues.values
-ss_res = np.sum((y_true - y_pred) ** 2)
-ss_tot = np.sum((y_true - y_true.mean()) ** 2)
-r_squared = 1 - ss_res / ss_tot
-print(f"R-squared: {r_squared:.4f}")
+def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
+    """重命名列并进行标准化预处理"""
+    column_mapping = {
+        "孕妇代码": "mother_id",
+        "检测孕周": "gestational_age",
+        "孕妇BMI": "bmi",
+        "年龄": "age",
+        "Y染色体浓度": "y_concentration",
+        "检测日期": "test_date",
+        "末次月经": "last_menstrual_period",
+        "身高": "height",
+        "体重": "weight",
+        "在参考基因组上比对的比例": "mapping_ratio",
+        "GC含量": "GC",
+        "孕天": "gestational_weeks",
+    }
 
-# 模型拟合值
-mod_df["fitted"] = mdf.fittedvalues
-mod_df["residual"] = mod_df["y_logit"] - mod_df["fitted"]
+    df = df.rename(columns=column_mapping)
 
-# 1. 拟合 vs 实测值
-plt.figure(figsize=(6, 6))
-sns.scatterplot(x="fitted", y="y_logit", data=mod_df)
-plt.plot(
-    [mod_df["y_logit"].min(), mod_df["y_logit"].max()],
-    [mod_df["y_logit"].min(), mod_df["y_logit"].max()],
-    color="red",
-    linestyle="--",
-)
-plt.xlabel("Fitted values")
-plt.ylabel("Observed values")
-plt.title("Fitted vs Observed")
-plt.show()
+    # 截断 Y 染色体浓度并取 logit
+    df["y_clipped"] = df["y_concentration"].clip(lower=1e-6, upper=1 - 1e-6)
+    df["y_logit"] = np.log(df["y_clipped"] / (1 - df["y_clipped"]))
 
-# 2. 随机效应分布
-re_df = pd.DataFrame(mdf.random_effects).T  # 转为 DataFrame
-plt.figure(figsize=(8, 4))
-sns.boxplot(data=re_df)
-plt.title("Random Effects Distribution by Group")
-plt.show()
+    # 标准化 BMI 与孕周
+    for col in ["bmi", "gestational_weeks"]:
+        df[col] = (df[col] - df[col].mean()) / df[col].std()
 
-# 3. 残差分布
-plt.figure(figsize=(6, 4))
-sns.histplot(mod_df["residual"], kde=True)
-plt.title("Residual Distribution")
-plt.xlabel("Residual")
-plt.show()
+    return df
 
-# 4. 残差 vs 拟合值
-plt.figure(figsize=(6, 4))
-sns.scatterplot(x="fitted", y="residual", data=mod_df)
-plt.axhline(0, color="red", linestyle="--")
-plt.xlabel("Fitted values")
-plt.ylabel("Residuals")
-plt.title("Residuals vs Fitted")
-plt.show()
+
+def fit_mixed_model(df: pd.DataFrame):
+    """拟合混合效应模型并返回结果"""
+    formula = "y_logit ~ bmi + gestational_weeks"
+    model = smf.mixedlm(
+        formula,
+        df,
+        groups=df["mother_id"],
+        re_formula="~gestational_weeks",
+    )
+    result = model.fit(reml=False, method="lbfgs", maxiter=2000)
+    return result
+
+
+def evaluate_model(df: pd.DataFrame, result):
+    """计算 R² 并生成拟合值与残差"""
+    y_obs = df["y_logit"].values
+    y_fit = result.fittedvalues.values
+
+    ss_res = np.sum((y_obs - y_fit) ** 2)
+    ss_tot = np.sum((y_obs - y_obs.mean()) ** 2)
+    r2 = 1 - ss_res / ss_tot
+
+    df["fitted"] = result.fittedvalues
+    df["residual"] = df["y_logit"] - df["fitted"]
+
+    return r2, df
+
+
+def plot_diagnostics(df: pd.DataFrame, result):
+    """绘制模型诊断图"""
+    # 1. 拟合值 vs 观测值
+    plt.figure(figsize=(6, 6))
+    sns.scatterplot(x="fitted", y="y_logit", data=df)
+    min_val, max_val = df["y_logit"].min(), df["y_logit"].max()
+    plt.plot([min_val, max_val], [min_val, max_val], "r--")
+    plt.xlabel("Fitted values")
+    plt.ylabel("Observed values")
+    plt.title("Fitted vs Observed")
+    plt.show()
+
+    # 2. 随机效应分布
+    re_df = pd.DataFrame(result.random_effects).T
+    plt.figure(figsize=(8, 4))
+    sns.boxplot(data=re_df)
+    plt.title("Random Effects Distribution by Group")
+    plt.show()
+
+    # 3. 残差分布
+    plt.figure(figsize=(6, 4))
+    sns.histplot(df["residual"], kde=True)
+    plt.title("Residual Distribution")
+    plt.xlabel("Residual")
+    plt.show()
+
+    # 4. 残差 vs 拟合值
+    plt.figure(figsize=(6, 4))
+    sns.scatterplot(x="fitted", y="residual", data=df)
+    plt.axhline(0, color="red", linestyle="--")
+    plt.xlabel("Fitted values")
+    plt.ylabel("Residuals")
+    plt.title("Residuals vs Fitted")
+    plt.show()
+
+
+data = preprocess_data(mod_df)
+model_result = fit_mixed_model(data)
+
+print(model_result.summary())
+
+r2, data = evaluate_model(data, model_result)
+print(f"R-squared: {r2:.4f}")
+
+plot_diagnostics(data, model_result)
