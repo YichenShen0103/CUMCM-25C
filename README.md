@@ -1,5 +1,14 @@
 # CUMCM-25C
 
+
+
+## News
+
+- Our paper has been accepted with **the second prize at the national level**.
+- This repository has been archived and is no longer maintained.
+
+
+
 ## Run our code
 
 **Google Colab**
